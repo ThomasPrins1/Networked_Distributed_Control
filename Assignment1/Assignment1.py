@@ -32,7 +32,7 @@ print("B=",B)
 tau = 0
 # iterations
 N = 75
-kappaSamples = 9
+kappaSamples = 11
 # state
 x0 = np.array([[0],[0]])
 x = np.zeros([2,N])
@@ -45,11 +45,13 @@ k2 = symbols('k2')
 s = symbols('s')
 Kappa = np.array([[k1], [k2]])
 A_sizeT = np.shape(A)
+print(Kappa)
+print(B)
 # fill in u = -Kappa*state_space:
 # This gives state_space' = (A-B*Kappa)* state_space
 # With poles at -2+-j, meaning eigenvalues of A-B*Kappa must be equal to (s-(-2-j))(s-(-2+j))
 # This in turn is equal to s^2+4s+5, now the result of 
-temp = s*np.eye(A_sizeT[0])-(A-(B*Kappa))
+temp = s*np.eye(A_sizeT[0])-(A-(B@Kappa.T))
 print(temp)
 # this results in: (k1+s)*(s+1) - 2.8*(k2+0.5) = k1*s + s^2 + s + k1 - 2,8*k2 - 0.5*2.8
 # equal to s^2 + s(k1+1) + (k1-2.8*k2-1.4)
@@ -58,7 +60,6 @@ print(temp)
 k1 = 3
 k2 = -3.4/2.8
 Kappa = np.array([[k1], [k2]]).T
-print("Kappa", Kappa.shape)
 
 # input
 u0 = -Kappa@x0
@@ -78,7 +79,7 @@ def calculate_FG(A,B,h,tau,include_delay):
         Fu1 = np.linalg.solve(A, expm(A * (h - tau)) - np.eye(n)) @ B
         Fu2 = np.zeros((n,m))
         Fu = np.hstack((Fu1, Fu2))
-        G1 = (expm(A*(h-tau))-np.eye(n))@np.linalg.inv(A)@B
+        G1 = np.linalg.solve(A, expm(A * h) - expm(A * (h - tau))) @ B#(expm(A*(h-tau))-np.eye(n))@np.linalg.inv(A)@B
         if include_delay == True:
             G_added = np.zeros((n,m))
             F = np.block([[Fx, Fu], [np.eye(n), np.zeros((n, n))]])
@@ -118,7 +119,6 @@ def convex_solve(A,B,Kappa1,Kappa2,tau):
             if prob.status == 'optimal':
                 stable_points.append((h1, h2))
     return stable_points
-
 def checkElements(F,G,staticKappa_vals):
     out = []
     i=0
@@ -162,12 +162,16 @@ for i,h in enumerate(h_vals):
     max_eig_mags2 = []
     for tau in tau_vals:
         Fx,Fu,G1,F,G = calculate_FG(A,B,h,tau,False)
-        bestKappaIndex.extend(checkElements(F,G,staticKappa_vals))
+        #bestKappaIndex.extend(checkElements(F,G,staticKappa_vals))
         A_stability = F-G@staticKappa
         eigenvalues = np.linalg.eigvals(A_stability)
         temp = np.max(np.abs(eigenvalues))
         max_eig_mags2.append(temp)
     max_eig_mags2_total.append(max_eig_mags2)
+h = 0.4
+for tau in tau_vals:
+    Fx,Fu,G1,F,G = calculate_FG(A,B,h,tau,False)
+    bestKappaIndex.extend(checkElements(F,G,staticKappa_vals))
 commonKappa = Counter(bestKappaIndex).most_common(1)
 print("The most valid values for K are:", staticKappa_vals[commonKappa[0][0], :])
 
@@ -211,7 +215,7 @@ for i,h in enumerate(h_vals):
         max_eig_mags3.append(np.max(np.abs(eigenvalues)))
     max_eig_mags3_total.append(max_eig_mags3)
     e_tau = h/2
-    _,_,_,F_staticTau,G_staticTau = calculate_FG(A,B,h,tau,True)
+    _,_,_,F_staticTau,G_staticTau = calculate_FG(A,B,h,e_tau,True)
     bestKappaIndex.extend(checkElements(F_staticTau,G_staticTau,staticKappa_vals))
 commonKappa = Counter(bestKappaIndex).most_common(1)
 print("The most valid values for K are:", staticKappa_vals[commonKappa[0][0], :])
@@ -244,6 +248,7 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
+#Q2
 # Convert to NumPy array for plotting
 Z1 = np.array(max_eig_mags2_total)
 Z2 = np.array(max_eig_mags3_total)
@@ -259,6 +264,11 @@ plt.colorbar(contour, label='Max |eig(F)|')
 # Add stability boundary (e.g., contour where max eig = 1)
 cs = plt.contour(T, H, Z1, levels=[1.0], colors='red', linewidths=2)
 plt.clabel(cs, inline=True, fmt='Stability boundary', fontsize=10)
+
+# Add diagonal line τ = h
+min_val = max(np.min(T), np.min(H))
+max_val = min(np.max(T), np.max(H))
+plt.plot([min_val, max_val], [min_val, max_val], color='white', linestyle='--', linewidth=2, label='τ = h')
 
 # Labels
 plt.xlabel('τ (Delay)')
@@ -277,6 +287,12 @@ plt.colorbar(contour, label='Max |eig(F)|')
 # Add stability boundary (e.g., contour where max eig = 1)
 cs = plt.contour(T, H, Z2, levels=[1.0], colors='red', linewidths=2)
 plt.clabel(cs, inline=True, fmt='Stability boundary', fontsize=10)
+
+# Add diagonal line τ = h
+min_val = max(np.min(T), np.min(H))
+max_val = min(np.max(T), np.max(H))
+plt.plot([min_val, max_val], [min_val, max_val], color='white', linestyle='--', linewidth=2, label='τ = h')
+
 
 # Labels
 plt.xlabel('τ (Delay)')
