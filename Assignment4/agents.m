@@ -19,3 +19,4 @@ x04=[5;-0.5];
 Tfinal=20;
 umax=7;
 
+save("agents.mat")
