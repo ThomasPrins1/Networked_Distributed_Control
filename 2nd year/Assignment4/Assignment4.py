@@ -29,7 +29,6 @@ agents = 4
 
 # load in the agents.mat dataset:
 agent_dynamic_data = scipy.io.loadmat('agents.mat')
-print(agent_dynamic_data)
 A1 = np.array((agent_dynamic_data['A1']))
 A2 = np.array((agent_dynamic_data['A2']))
 A3 = np.array((agent_dynamic_data['A3']))
