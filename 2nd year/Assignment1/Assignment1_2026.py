@@ -15,68 +15,50 @@ import cvxpy as cp
 from collections import Counter
 np.random.seed(19680806)
 
-
 """ Variables """
-tolerance = 1e-1
+tolerance = 1e-2
 eta = 1e-4
 a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
-A = np.array([[(0.5-c),0],[(0.2+a-b),-1]])
+# iterations
+N = 1000
+K_Samples = 5*N+1
+"""pre-calculations Kappa"""
+A = np.array([[0,(0.5+c)],[(0.5+abs(a-b)),1]])
 B = np.array([[1],[0]])
 print("A=",A)
 print("B=",B)
-# iterations
-N = 100
-kappaSamples = 5*N+1
-
-
 # eigenvalues K:
 k1 = symbols('k1')
 k2 = symbols('k2')
 s = symbols('s')
-Kappa = np.array([[k1], [k2]])
+K = np.array([[k1], [k2]])
 A_sizeT = np.shape(A)
-print(Kappa)
-
-# fill in u = -Kappa*state_space:
-# This gives state_space' = (A-B*Kappa)* state_space
-# With poles at -2+-j, meaning eigenvalues of A-B*Kappa must be equal to (s-(-2-j))(s-(-2+j))
-# This in turn is equal to s^2+4s+5, now the result of 
-temp = s*np.eye(A_sizeT[0])-(A-(B@Kappa.T))
+temp = s*np.eye(A_sizeT[0])-(A-(B@K.T))
+temp_det = temp[0][0]*temp[1][1]-temp[0][1]*temp[1][0]
 print(temp)
-# (k1+s+0.5)(s+1) - 2.8*k2 -> k1*s + k1 + s^2 + s + 0.5*s + 0.5 - 2.8*k2 -> s^2 + s(k1+1.5) + (k1+0.5-2.8*k2)
-# k1 = 2.5
-# 3-2.8*k2 = 5 -> k2 = (5-3)/-2.8 -> k2 = -2/2.8
-# this results in: (k1+s)*(s+1) - 2.8*(k2+0.5) = k1*s + s^2 + s + k1 - 2,8*k2 - 0.5*2.8
-# equal to s^2 + s(k1+1) + (k1-2.8*k2-1.4)
-# this gives k1 = 3
-# and 3-2.8*k2-1.4 = 5 gives k2 = -3.4/2.8
-k1 = 2.5
-k2 = -2/2.8
-Kappa = np.array([[k1], [k2]]).T
+print(temp_det)
+k1 = 5
+k2 = 61/14
+K = np.array([[k1], [k2]]).T # pre-transpose
 
 
 """ Functions """
-def calculate_FG(A,B,h):
-    # F values:
+def FG_model_noDelay(A,B,h):
+    # This function uses the A and B matrix to form the F and G matrix using the sampling time h
     n = A.shape[0]
-    # m = B.shape[1]
     singular = np.linalg.matrix_rank(A)
-    # write as x_k+1 = x_k*(F_h-G_h*Kappa), where:
-    ## F_h = e^A*h and G_h = integral(e^A*h)*B
     if singular == n:
         F = expm(A*h)
-        print(F)
         G = ((F-np.eye(n))@(np.linalg.inv(A)))@B
-        print(G)
-        #G = np.linalg.solve(A, expm(A * h) - expm(A * (h - tau))) @ B
         return F,G
     else:
         # if not invertable:
         print("A is a singular matrix")
         return np.nan,np.nan,np.nan,np.nan,np.nan
     
+
 def calculate_FG_delay(A,B,h,tau):
     # F values:
     n = A.shape[0]
@@ -178,15 +160,16 @@ def checkElements(F,G,Kappa_vals):
     return out
 
 """ Main Code """
+
 """ Question 1 """
 
-h_vals = np.linspace(0.01, 1, N)
+h_vals = np.linspace(0, 0.5, N)
 max_eig_mags = []
 best_h = []
 
 for h in h_vals:
-    F,G = calculate_FG(A,B,h)
-    A_cl = F-G@Kappa
+    F,G = FG_model_noDelay(A,B,h)
+    A_cl = F-G@K
     eigenvalues = np.linalg.eigvals(A_cl)
     max_eig_mags.append(np.max(np.abs(eigenvalues)))
     if isclose(np.max(np.abs(eigenvalues)), 1, abs_tol=tolerance) == True:
@@ -195,7 +178,32 @@ for h in h_vals:
 print("Highest limit of sampling time given by h=",np.mean(best_h),"with tolerance equal to +-:",tolerance)
 print("Lower limit will always approach 0")
 
+#plotting
+min_index = max_eig_mags.index(min(max_eig_mags))
+min_h = h_vals[min_index]
+min_val = max_eig_mags[min_index]
 
+plt.figure(figsize=(8, 4))
+plt.plot(h_vals, max_eig_mags, label='Max |Eigenvalue|')
+plt.axhline(1.0, color='red', linestyle='--', label='Stability Limit')
+
+# Highlight the minimum point
+plt.plot(min_h, min_val, 'o', color='green', label='Minimum Value')
+plt.annotate(f'Min: ({min_h:.2f}, {min_val:.2f})',
+             xy=(min_h, min_val), xytext=(min_h, min_val + 0.05),
+             arrowprops=dict(arrowstyle='->', color='green'),
+             color='green')
+
+plt.xlabel("Sampling Time h")
+plt.ylabel("Max Magnitude of Eigenvalues")
+plt.title((f"Stability of Sampled-Data Closed-Loop System between: [0, {np.mean(best_h):.2f}]"))
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig("Q1_stabilityOfStaticController.png")
+plt.show()
+
+exit()
 
 """ Question 2 """
 tau_vals = np.linspace(0, 1, N)
@@ -245,30 +253,7 @@ for i,h in enumerate(h_vals):
     feasible_list_fixed.append(feasibility_fixed)
 
 
-#Q1
-min_index = max_eig_mags.index(min(max_eig_mags))
-min_h = h_vals[min_index]
-min_val = max_eig_mags[min_index]
 
-plt.figure(figsize=(8, 4))
-plt.plot(h_vals, max_eig_mags, label='Max |Eigenvalue|')
-plt.axhline(1.0, color='red', linestyle='--', label='Stability Limit')
-
-# Highlight the minimum point
-plt.plot(min_h, min_val, 'o', color='green', label='Minimum Value')
-plt.annotate(f'Min: ({min_h:.2f}, {min_val:.2f})',
-             xy=(min_h, min_val), xytext=(min_h, min_val + 0.05),
-             arrowprops=dict(arrowstyle='->', color='green'),
-             color='green')
-
-plt.xlabel("Sampling Time h")
-plt.ylabel("Max Magnitude of Eigenvalues")
-plt.title((f"Stability of Sampled-Data Closed-Loop System between: [0, {np.mean(best_h):.2f}]"))
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Q1_stabilityOfStaticController.png")
-plt.show()
 
 #Q2
 # Convert to NumPy array for plotting
