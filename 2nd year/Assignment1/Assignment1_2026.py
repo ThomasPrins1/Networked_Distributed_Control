@@ -24,6 +24,7 @@ c = 1 # last digid digit student number
 # iterations
 N = 1000
 K_Samples = 5*N+1
+h_max = 0.5
 """pre-calculations Kappa"""
 A = np.array([[0,(0.5+c)],[(0.5+abs(a-b)),1]])
 B = np.array([[1],[0]])
@@ -59,19 +60,22 @@ def FG_model_noDelay(A,B,h):
         return np.nan,np.nan,np.nan,np.nan,np.nan
     
 
-def calculate_FG_delay(A,B,h,tau):
-    # F values:
+def FG_model_delay(A,B,h,tau):
+    # This function uses the A and B matrices to form the extended F and G matrices. It uses the sampling time h and the delay tau.
+    # Take care this is an extended system, which means the sizes of the F and G matrices are not equal to the noDelay model!
+    # the delay goes back to k-2
     n = A.shape[0]
     m = B.shape[1]
     singular = np.linalg.matrix_rank(A)
     # write as x_k+1 = x_k*(F_h-G_h*Kappa)
     if singular == n:
-        Fx = expm(A*h)
-        temp = expm(A*(h-tau))
-        Fu = ((Fx-temp)@(np.linalg.inv(A)))@B
-        G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B
-        F = np.block([[Fx, Fu], [np.zeros((m,n)), np.zeros((m,m))]])
-        G = np.vstack((G1, np.eye(m)))
+        Fx = expm(A*h) # 2x2
+        temp = expm(A*(h-tau)) # 2x2
+        Fu = ((Fx-temp)@(np.linalg.inv(A)))@B # 2x1
+        G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B # 2x1
+        F = np.block([[Fx, Fu, np.zeros((n,m))], [np.zeros((m,n)), np.zeros((m,m)), np.zeros((m,m))], [np.zeros((m,n)), np.eye(m),np.zeros((m,m))]]) # 4x4
+        G = np.block([[G1],[np.eye(m)],[np.zeros((m,m))]])
+        ##np.vstack((G1, np.eye(m)), np.zeros((m,m))) # 4x1
         return F,G
     else:
         # if not invertable:
@@ -163,28 +167,29 @@ def checkElements(F,G,Kappa_vals):
 
 """ Question 1 """
 
-h_vals = np.linspace(0, 0.5, N)
-max_eig_mags = []
+h_vals = np.linspace(0, h_max, N)
+max_eig_noDelay = []
 best_h = []
 
 for h in h_vals:
     F,G = FG_model_noDelay(A,B,h)
     A_cl = F-G@K
     eigenvalues = np.linalg.eigvals(A_cl)
-    max_eig_mags.append(np.max(np.abs(eigenvalues)))
+    max_eig_noDelay.append(np.max(np.abs(eigenvalues)))
     if isclose(np.max(np.abs(eigenvalues)), 1, abs_tol=tolerance) == True:
         best_h.append(h)
 
 print("Highest limit of sampling time given by h=",np.mean(best_h),"with tolerance equal to +-:",tolerance)
 print("Lower limit will always approach 0")
 
-#plotting
-min_index = max_eig_mags.index(min(max_eig_mags))
+## Plotting
+
+min_index = max_eig_noDelay.index(min(max_eig_noDelay))
 min_h = h_vals[min_index]
-min_val = max_eig_mags[min_index]
+min_val = max_eig_noDelay[min_index]
 
 plt.figure(figsize=(8, 4))
-plt.plot(h_vals, max_eig_mags, label='Max |Eigenvalue|')
+plt.plot(h_vals, max_eig_noDelay, label='Max |Eigenvalue|')
 plt.axhline(1.0, color='red', linestyle='--', label='Stability Limit')
 
 # Highlight the minimum point
@@ -203,61 +208,49 @@ plt.tight_layout()
 plt.savefig("Q1_stabilityOfStaticController.png")
 plt.show()
 
-exit()
+
 
 """ Question 2 """
-tau_vals = np.linspace(0, 1, N)
-max_eig_mags2_total = []
-bestKappaIndex = []
+tau_vals = np.linspace(0, 2*h_max, N)
+max_eig_delay_total = []
+best_K_index = []
 # with extended state an extended Kappa is needed aswell using the static controller:
-staticKappa = np.hstack((Kappa, np.zeros((1,1))))
+Ke = np.hstack((K, np.eye(1), np.zeros((1,1)))) # 1x4 since [K,1,0], not sure about 1 though?
 
-Kappa_u_vals = np.linspace(-10, 10, kappaSamples)
-dynamicKappa_vals = np.stack([np.ones_like(Kappa_u_vals)*Kappa[0,0],np.ones_like(Kappa_u_vals)*Kappa[0,1], Kappa_u_vals])
+#Ke_vals = np.linspace(-10, 10, K_Samples) #?
+#dynamicKappa_vals = np.stack([np.ones_like(Ke_vals)*K[0,0],np.ones_like(Ke_vals)*K[0,1], Ke_vals]) #?
 for i,h in enumerate(h_vals):
     print("progress Q2:",(i/N)*100,"%")
-    max_eig_mags2 = []
+    max_eig_delay = []
     for tau in tau_vals:
-        if tau<h:
-            F,G = calculate_FG_delay(A,B,h,tau)
-            A_cl = F-G@staticKappa
+        if tau<h: # case where tau < h
+            F,G = FG_model_delay(A,B,h,tau)
+            A_cl = F-G@Ke
             eigenvalues = np.linalg.eigvals(A_cl)
             temp = np.max(np.abs(eigenvalues))
-            max_eig_mags2.append(temp)
-        else:
-            max_eig_mags2.append(np.nan)
-    max_eig_mags2_total.append(max_eig_mags2)
+            max_eig_delay.append(temp)
+        else: # case where tau > h
+            F,_ = FG_model_delay(A,B,h,tau)
+            eigenvalues = np.linalg.eigvals(F)
+            temp = np.max(np.abs(eigenvalues))
+            max_eig_delay.append(temp)
+    max_eig_delay_total.append(max_eig_delay)
 
 # h= 0.6 is arbitrarily chosen while being stable at tau=0
 # we use the dynamic Kappa for this with variable dynamic control.
-h = 0.6
-for tau in tau_vals:
-    if tau<h:
-        F,G = calculate_FG_delay(A,B,h,tau)
-        bestKappaIndex.extend(checkElements(F,G,dynamicKappa_vals))
+#h = 0.6
+#for tau in tau_vals:
+#    if tau<h:
+#        F,G = calculate_FG_delay(A,B,h,tau)
+#        bestKappaIndex.extend(checkElements(F,G,dynamicKappa_vals))
 
-commonKappa = Counter(bestKappaIndex).most_common(10)
-print(commonKappa)
-print("The most valid values for K are:", dynamicKappa_vals[:,commonKappa[0][0]])
+#commonKappa = Counter(bestKappaIndex).most_common(10)
+#print(commonKappa)
+#print("The most valid values for K are:", dynamicKappa_vals[:,commonKappa[0][0]])
 
-""" Question 3 """
-feasible_list = []
-feasible_list_fixed = []
-h_vals = np.linspace(0, 1, N)
-tau_vals = np.linspace(0, 1, N)
-for i,h in enumerate(h_vals):
-    print("progress Q3:",(i/N)*100,"%")
-    feasibility = convex_solve(A,B,staticKappa,tau_vals,h)
-    feasibility_fixed = convex_solve_fixed(A,B,staticKappa,h)
-    feasible_list.append(feasibility)
-    feasible_list_fixed.append(feasibility_fixed)
+## Plotting
 
-
-
-
-#Q2
-# Convert to NumPy array for plotting
-Z1 = np.array(max_eig_mags2_total)
+Z1 = np.array(max_eig_delay_total) # Convert to NumPy array for plotting
 
 # Create meshgrid for contour plot
 H, T = np.meshgrid(h_vals,tau_vals)  # note the order: row = h, column = tau
@@ -281,6 +274,26 @@ plt.tight_layout()
 plt.savefig("Q2_stabilityOfNCS.png")
 plt.show()
 
+# temp exit()
+exit()
+
+""" Question 3 """
+feasible_list = []
+feasible_list_fixed = []
+h_vals = np.linspace(0, 1, N)
+tau_vals = np.linspace(0, 1, N)
+for i,h in enumerate(h_vals):
+    print("progress Q3:",(i/N)*100,"%")
+    feasibility = convex_solve(A,B,staticKappa,tau_vals,h)
+    feasibility_fixed = convex_solve_fixed(A,B,staticKappa,h)
+    feasible_list.append(feasibility)
+    feasible_list_fixed.append(feasibility_fixed)
+
+
+
+
+
+#Q2 extra
 # Unpack the data
 kappa_values, counts = zip(*commonKappa)
 
