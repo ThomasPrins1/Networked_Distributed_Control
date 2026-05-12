@@ -23,7 +23,7 @@ b = 8 # third digit student number
 c = 1 # last digid digit student number
 # iterations
 N = 1000
-K_Samples = 5*N+1
+K_Samples = 51
 h_max = 0.5
 """pre-calculations Kappa"""
 A = np.array([[0,(0.5+c)],[(0.5+abs(a-b)),1]])
@@ -71,17 +71,37 @@ def FG_model_delay(A,B,h,tau):
     if singular == n:
         Fx = expm(A*h) # 2x2
         temp = expm(A*(h-tau)) # 2x2
-        Fu = ((Fx-temp)@(np.linalg.inv(A)))@B # 2x1
+        if tau<=h:
+            Fu = ((Fx-temp)@(np.linalg.inv(A)))@B # 2x1
+        elif tau>h:
+            Fu = np.zeros((n,m)) # 2x1
         G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B # 2x1
-        F = np.block([[Fx, Fu, np.zeros((n,m))], [np.zeros((m,n)), np.zeros((m,m)), np.zeros((m,m))], [np.zeros((m,n)), np.eye(m),np.zeros((m,m))]]) # 4x4
-        G = np.block([[G1],[np.eye(m)],[np.zeros((m,m))]])
-        ##np.vstack((G1, np.eye(m)), np.zeros((m,m))) # 4x1
+        F = np.block([[Fx, Fu], [np.zeros((m,n+m))]]) # 3x3
+        G = np.block([[G1],[np.eye(m)]])
+        ##np.vstack((G1, np.eye(m)), np.zeros((m,m))) # 3x1
         return F,G
     else:
         # if not invertable:
         print("A is a singular matrix")
         return np.nan,np.nan,np.nan,np.nan,np.nan
 
+def find_optimal_K(A,B,h,tau_vals):
+    n = A.shape[0]
+    m = B.shape[1]
+    K = cp.Variable((2,1))
+    stable_points = []
+    constraints = []
+    for tau in tau_vals:
+        F,G = FG_model_delay(A,B,h,tau)
+        Acl = F-G@(K.reshape(1,-1))
+        constraints += [cp.lambda_max(A_cl)<1]
+    prob = cp.Problem(cp.Maximize(cp.trace(tau)), constraints)
+    prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
+    if prob.status == 'optimal':
+        return K.value
+    else:
+        return False
+    
 def calculate_FG_delay_extended(A,B,h,tau):
     # F values:
     n = A.shape[0]
@@ -157,7 +177,8 @@ def checkElements(F,G,Kappa_vals):
     out = []
     i=0
     for i, K in enumerate(Kappa_vals.T):
-        A_cl = F-G@(K.reshape(1,-1))
+        Kex = np.hstack((K.reshape(1, -1),np.zeros((1,1))))
+        A_cl = F-G@(Kex.reshape(1,-1))
         eigenvalues = np.linalg.eigvals(A_cl)
         if (np.max(np.abs(eigenvalues)) < 1):
             out.append(i) # index of Kappa
@@ -211,58 +232,65 @@ plt.show()
 
 
 """ Question 2 """
+# 
 tau_vals = np.linspace(0, 2*h_max, N)
 max_eig_delay_total = []
 best_K_index = []
 # with extended state an extended Kappa is needed aswell using the static controller:
-Ke = np.hstack((K, np.eye(1), np.zeros((1,1)))) # 1x4 since [K,1,0], not sure about 1 though?
+Ke = np.hstack((K, np.zeros((1,1)))) # 1x3
 
-#Ke_vals = np.linspace(-10, 10, K_Samples) #?
-#dynamicKappa_vals = np.stack([np.ones_like(Ke_vals)*K[0,0],np.ones_like(Ke_vals)*K[0,1], Ke_vals]) #?
 for i,h in enumerate(h_vals):
     print("progress Q2:",(i/N)*100,"%")
     max_eig_delay = []
     for tau in tau_vals:
-        if tau<h: # case where tau < h
+        if tau<2*h: # case where tau < 2h
             F,G = FG_model_delay(A,B,h,tau)
             A_cl = F-G@Ke
             eigenvalues = np.linalg.eigvals(A_cl)
             temp = np.max(np.abs(eigenvalues))
             max_eig_delay.append(temp)
-        else: # case where tau > h
-            F,_ = FG_model_delay(A,B,h,tau)
-            eigenvalues = np.linalg.eigvals(F)
-            temp = np.max(np.abs(eigenvalues))
-            max_eig_delay.append(temp)
+        else: # case where exceeds boundary of 2h
+            max_eig_delay.append(np.nan)
     max_eig_delay_total.append(max_eig_delay)
 
-# h= 0.6 is arbitrarily chosen while being stable at tau=0
+# h= 0.3 is arbitrarily chosen while being stable at tau=0
 # we use the dynamic Kappa for this with variable dynamic control.
-#h = 0.6
-#for tau in tau_vals:
-#    if tau<h:
-#        F,G = calculate_FG_delay(A,B,h,tau)
-#        bestKappaIndex.extend(checkElements(F,G,dynamicKappa_vals))
+k1_range = np.linspace(-20, 20, K_Samples)
+k2_range = np.linspace(-20, 20, K_Samples)
 
-#commonKappa = Counter(bestKappaIndex).most_common(10)
-#print(commonKappa)
-#print("The most valid values for K are:", dynamicKappa_vals[:,commonKappa[0][0]])
+K1, K2 = np.meshgrid(k1_range, k2_range)
+
+dynamic_K_vals = np.vstack([
+    K1.ravel(),
+    K2.ravel()
+])
+print(dynamic_K_vals)
+best_K_Index = []
+h = 0.3
+for i,tau in enumerate(tau_vals):
+    print("progress Q2, K optimisation:",(i/N)*100,"%")
+    if tau<2*h:
+        F,G = FG_model_delay(A,B,h,tau)
+        best_K_Index.extend(checkElements(F,G,dynamic_K_vals))
+
+commonKappa = Counter(best_K_Index)
+print(commonKappa)
+#print("The most valid values for K are:", dynamic_K_vals[:,commonKappa[0][0]])
 
 ## Plotting
-
-Z1 = np.array(max_eig_delay_total) # Convert to NumPy array for plotting
+Z1 = np.where(np.array((max_eig_delay_total))>=1,0,1) # Convert to NumPy array for plotting & make 1 for stable, 0 for unstable
 
 # Create meshgrid for contour plot
 H, T = np.meshgrid(h_vals,tau_vals)  # note the order: row = h, column = tau
 
 # Plot contour where max eigenvalue magnitude = 1
 plt.figure(figsize=(8, 6))
-contour = plt.contourf(T, H, Z1, levels=50, cmap='viridis')
+contour = plt.contourf(T, H, Z1, levels=2, cmap='viridis')
 plt.colorbar(contour, label='Max |eig(F)|')
 
 # Add stability boundary (e.g., contour where max eig = 1)
-cs = plt.contour(T, H, Z1, levels=[1.0], colors='red', linewidths=2)
-plt.clabel(cs, inline=True, fmt='Stability boundary', fontsize=10)
+#cs = plt.contour(T, H, Z1, levels=[1.0], colors='red', linewidths=2)
+#plt.clabel(cs, inline=True, fmt='Stability boundary', fontsize=10)
 
 # Labels
 plt.ylabel('τ (Delay)')
@@ -273,6 +301,73 @@ plt.grid(True)
 plt.tight_layout()
 plt.savefig("Q2_stabilityOfNCS.png")
 plt.show()
+
+# Unpack the data
+# Build arrays for heatmap
+k1_vals = []
+k2_vals = []
+counts = []
+
+for idx, count in commonKappa.items():
+    k1_vals.append(dynamic_K_vals[0, idx])   # k1
+    k2_vals.append(dynamic_K_vals[1, idx])   # k2
+    counts.append(count)
+
+k1_vals = np.array(k1_vals)
+k2_vals = np.array(k2_vals)
+counts = np.array(counts)
+print(k1_vals)
+# Create figure
+plt.figure(figsize=(8, 6))
+
+# Heatmap-style scatter plot
+sc = plt.scatter(
+    k1_vals,
+    k2_vals,
+    c=counts,
+    s=120,
+    cmap='hot',
+    edgecolors='black'
+)
+
+# Colorbar
+cbar = plt.colorbar(sc)
+cbar.set_label('Frequency')
+
+# Find highest frequency point
+max_idx = np.argmax(counts)
+
+best_k1 = k1_vals[max_idx]
+best_k2 = k2_vals[max_idx]
+best_count = counts[max_idx]
+
+# Highlight most common region
+plt.scatter(
+    best_k1,
+    best_k2,
+    s=300,
+    facecolors='none',
+    edgecolors='cyan',
+    linewidths=3,
+    label=f'Highest Frequency = {best_count}'
+)
+
+# Labels
+plt.xlabel('k1')
+plt.ylabel('k2')
+plt.title('Heatmap of Most Common K Values')
+
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+
+plt.savefig("Q2_mostCommonKappa_heatmap.png")
+plt.show()
+
+print(f"Highest frequency at:")
+print(f"k1 = {best_k1}")
+print(f"k2 = {best_k2}")
+print(f"count = {best_count}")
 
 # temp exit()
 exit()
@@ -294,19 +389,7 @@ for i,h in enumerate(h_vals):
 
 
 #Q2 extra
-# Unpack the data
-kappa_values, counts = zip(*commonKappa)
 
-# Create bar chart
-plt.figure(figsize=(6, 4))
-plt.bar(dynamicKappa_vals[2,kappa_values], counts, color='skyblue')
-plt.xlabel('dynamic Kappa value')
-plt.ylabel('Frequency')
-plt.title('Top 10 Most Common Kappa Index Values')
-plt.grid(axis='y', linestyle='--', alpha=0.9)
-plt.tight_layout()
-plt.savefig("Q2_mostCommonKappa.png")
-plt.show()
 
 
 #Q3
