@@ -17,12 +17,12 @@ np.random.seed(19680806)
 
 """ Variables """
 tolerance = 1e-2
-eta = 1e-4
+eta = 1e-6
 a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
 # iterations
-N = 20
+N = 50
 K_Samples = 51
 h_max = 0.5
 """pre-calculations Kappa"""
@@ -77,7 +77,7 @@ def FG_model_delay(A,B,h,tau):
             Fu = np.zeros((n,m)) # 2x1
         G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B # 2x1
         F = np.block([[Fx, Fu], [np.zeros((m,n+m))]]) # 3x3
-        G = np.block([[G1],[np.eye(m)]])
+        G = np.block([[G1],[np.eye(m)]]) # 3x1
         return F,G
     else:
         # if not invertable:
@@ -87,29 +87,88 @@ def FG_model_delay(A,B,h,tau):
 def convex_solve(A,B,K,tau_vals,h):
     n = A.shape[0]
     m = B.shape[1]
-    P = cp.Variable((2*(n+m),2*(n+m)), symmetric = True)
-    stable_points = []
-    constraints = [P >> 1e-4 * np.zeros_like(P)]
+    P = cp.Variable(((n+m),(n+m)), symmetric = True) #3x3
+    C = 0
+    constraints = [P >> eta * np.eye(P.shape[0])]
     for tau in tau_vals:
-        if tau < 2*h:
+        if tau <= 2*h:
             F,G = FG_model_delay(A,B,h,tau)
-            Acl = F-G@K
-            A_aug = np.block([[Acl, np.zeros_like(Acl)], [np.eye(Acl.shape[0]), np.zeros_like(Acl)]])
-            constraints += [A_aug.T @ P @ A_aug - P << -eta * np.eye(A_aug.shape[0])]
+            Acl = F-G@K # 3x3
+            print(f"\ntau={tau}")
+            print("Acl=")
+            print(Acl)
+            constraints += [Acl.T @ P @ Acl - P << -eta * np.eye(Acl.shape[0])]
+            C+=1
     prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
-    if prob.status == 'optimal':
+    print("1->",C)
+    try:
+        prob.solve(
+            solver=cp.CVXOPT,
+            max_iters=5000
+        )
+
+    except Exception as e:
+
+        print("Solver failed:")
+        print(e)
+
+        return False
+    if prob.status == 'optimal' or prob.status == 'optimal_inaccurate':
+        return True
+    else:
+        print("bla")
+        return False
+
+def convex_solve_fixed(A,B,K,tau1,tau2,h):
+    n = A.shape[0]
+    m = B.shape[1]
+    P = cp.Variable(((n+m),(n+m)), symmetric = True)
+    C = 0
+    constraints = [P >> eta * np.eye(P.shape[0])]
+    if tau2 <= 2*h:
+        F2,G2 = FG_model_delay(A,B,h,tau2)
+        Acl2 = F2-G2@K # 3x3
+        # first check (tau1,tau1,tau2)
+        A_aug2 = Acl2
+        constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
+        C+=1
+        if tau1<= 2*h:
+            F1,G1 = FG_model_delay(A,B,h,tau1)
+            Acl1 = F1-G1@K
+            A_aug1 = Acl2@Acl1@Acl1 # 3x3
+            constraints += [A_aug1.T @ P @ A_aug1 - P << -eta * np.eye(A_aug1.shape[0])]
+            C+=1
+        
+    
+    prob = cp.Problem(cp.Minimize(0), constraints)
+    print("2->",C)
+    try:
+        prob.solve(
+            solver=cp.CVXOPT,
+            max_iters=5000
+        )
+
+    except Exception as e:
+
+        print("Solver failed:")
+        print(e)
+
+        return False
+    if prob.status == 'optimal' or prob.status == 'optimal_inaccurate':
         return True
     else:
         return False
-    #return stable_points
-
-def convex_solve_fixed(A,B,K,tau1_vals,tau2_vals,h):
+    
+def convex_solve_grid(A,B,K,tau1_vals,tau2_vals,h):
     n = A.shape[0]
     m = B.shape[1]
-    P = cp.Variable((2*(n+m),2*(n+m)), symmetric = True)
-    stable_points = []
-    constraints = [P >> 1e-4 * np.zeros_like(P)]
+    P = cp.Variable(((n+m),(n+m)), symmetric = True)
+    C = 0
+    constraints = [P >> eta * np.eye(P.shape[0])]
+    for tau in tau_vals:
+        F1,G1 = FG_model_delay(A,B,h,tau1)
+        F2,G2 = FG_model_delay(A,B,h,tau2)
+
     # first check (tau1,tau1,tau2)
     for tau1 in tau1_vals:
         if tau1 < 2*h:
@@ -117,20 +176,28 @@ def convex_solve_fixed(A,B,K,tau1_vals,tau2_vals,h):
             Acl1 = F1-G1@K
             for tau2 in tau2_vals:
                 F2,G2 = FG_model_delay(A,B,h,tau2)
-                Acl2 = F2-G2@K
-                Acomb = Acl1@Acl1@Acl2
-                A_aug1 = np.block([[Acomb, np.zeros_like(Acomb)], [np.eye(Acomb.shape[0]), np.zeros_like(Acomb)]])
+                Acl2 = F2-G2@K # 3x3
+                A_aug1 = Acl2@Acl1@Acl1 # 3x3
                 constraints += [A_aug1.T @ P @ A_aug1 - P << -eta * np.eye(A_aug1.shape[0])]
+                if tau2>h and tau2<2*h:
+                    A_aug2 = Acl2
+                    constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
+                    C+=1
+                C+=1
                 # second check (tau2)
                 
     # this should potentially give less constraints since 2nd check is limited over h<tau<2h
     for tau2 in tau2_vals:
         if tau2>h and tau2<2*h:
-                A_aug2 = np.block([[Acl2, np.zeros_like(Acl2)], [np.eye(Acl2.shape[0]), np.zeros_like(Acl2)]])
+                F2,G2 = FG_model_delay(A,B,h,tau2)
+                Acl2 = F2-G2@K
+                A_aug2 = Acl2
                 constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
+                C+=1
     
     prob = cp.Problem(cp.Minimize(0), constraints)
     prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
+    print("2->",C)
     if prob.status == 'optimal':
         return True
     else:
@@ -343,11 +410,15 @@ h_vals = np.linspace(0, h_max, N)
 tau_vals = np.linspace(0, 2*h_max, N)
 tau_vals1 = np.linspace(0, h_max, int(N/2))
 tau_vals2 = np.linspace(h_max, 2*h_max, int(N/2))
+avg_tau1 = sum(tau_vals1) / len(tau_vals1)
+avg_tau2 = sum(tau_vals2) / len(tau_vals2)
 for i,h in enumerate(h_vals):
     print("progress Q3:",(i/N)*100,"%")
+    # part 1
     feasibility = convex_solve(A,B,Ke,tau_vals,h)
-    feasibility_fixed = convex_solve_fixed(A,B,Ke,tau_vals1,tau_vals2,h)
     feasible_list.append(feasibility)
+    # part 2
+    feasibility_fixed = convex_solve_fixed(A,B,Ke,avg_tau1,avg_tau2,h)
     feasible_list_fixed.append(feasibility_fixed)
     
 
