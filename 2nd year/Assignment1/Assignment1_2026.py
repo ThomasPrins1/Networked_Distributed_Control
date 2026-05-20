@@ -22,7 +22,7 @@ a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
 # iterations
-N = 1000
+N = 20
 K_Samples = 51
 h_max = 0.5
 """pre-calculations Kappa"""
@@ -78,68 +78,22 @@ def FG_model_delay(A,B,h,tau):
         G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B # 2x1
         F = np.block([[Fx, Fu], [np.zeros((m,n+m))]]) # 3x3
         G = np.block([[G1],[np.eye(m)]])
-        ##np.vstack((G1, np.eye(m)), np.zeros((m,m))) # 3x1
         return F,G
     else:
         # if not invertable:
         print("A is a singular matrix")
         return np.nan,np.nan,np.nan,np.nan,np.nan
 
-def find_optimal_K(A,B,h,tau_vals):
-    n = A.shape[0]
-    m = B.shape[1]
-    K = cp.Variable((2,1))
-    stable_points = []
-    constraints = []
-    for tau in tau_vals:
-        F,G = FG_model_delay(A,B,h,tau)
-        Acl = F-G@(K.reshape(1,-1))
-        constraints += [cp.lambda_max(A_cl)<1]
-    prob = cp.Problem(cp.Maximize(cp.trace(tau)), constraints)
-    prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
-    if prob.status == 'optimal':
-        return K.value
-    else:
-        return False
-    
-def calculate_FG_delay_extended(A,B,h,tau):
-    # F values:
-    n = A.shape[0]
-    m = B.shape[1]
-    singular = np.linalg.matrix_rank(A)
-    # write as x_k+1 = x_k*(F_h-G_h*Kappa)
-    if singular == n:
-        Fx = expm(A*h)
-        temp = expm(A*(h-tau))
-        if tau>(h/2) and tau<h:
-            Fu = np.zeros((n,m))
-            G1 = ((Fx-np.eye(n))@(np.linalg.inv(A)))@B
-        else:
-            Fu = ((Fx-temp)@(np.linalg.inv(A)))@B
-            G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B
-        F = np.block([[Fx, Fu], [np.zeros((m,n)), np.zeros((m,m))]])
-        G = np.vstack((G1, np.eye(m)))
-        return F,G
-    else:
-        # if not invertable:
-        print("A is a singular matrix")
-        return np.nan,np.nan,np.nan,np.nan,np.nan
-
-def convex_solve(A,B,Kappa,tau_vals,h):
+def convex_solve(A,B,K,tau_vals,h):
     n = A.shape[0]
     m = B.shape[1]
     P = cp.Variable((2*(n+m),2*(n+m)), symmetric = True)
     stable_points = []
     constraints = [P >> 1e-4 * np.zeros_like(P)]
     for tau in tau_vals:
-        if tau<h/2:
-            F,G = calculate_FG_delay_extended(A,B,h,tau)
-            Acl = F-G@Kappa
-            A_aug = np.block([[Acl, np.zeros_like(Acl)], [np.eye(Acl.shape[0]), np.zeros_like(Acl)]])
-            constraints += [A_aug.T @ P @ A_aug - P << -eta * np.eye(A_aug.shape[0])]
-        elif tau>h/2 and tau<h:
-            F,G = calculate_FG_delay_extended(A,B,h,tau)
-            Acl = F-G@Kappa
+        if tau < 2*h:
+            F,G = FG_model_delay(A,B,h,tau)
+            Acl = F-G@K
             A_aug = np.block([[Acl, np.zeros_like(Acl)], [np.eye(Acl.shape[0]), np.zeros_like(Acl)]])
             constraints += [A_aug.T @ P @ A_aug - P << -eta * np.eye(A_aug.shape[0])]
     prob = cp.Problem(cp.Minimize(0), constraints)
@@ -150,22 +104,31 @@ def convex_solve(A,B,Kappa,tau_vals,h):
         return False
     #return stable_points
 
-def convex_solve_fixed(A,B,Kappa,h):
+def convex_solve_fixed(A,B,K,tau1_vals,tau2_vals,h):
     n = A.shape[0]
     m = B.shape[1]
     P = cp.Variable((2*(n+m),2*(n+m)), symmetric = True)
     stable_points = []
     constraints = [P >> 1e-4 * np.zeros_like(P)]
-
-    F1,G1 = calculate_FG_delay_extended(A,B,h,h/3)
-    F2,G2 = calculate_FG_delay_extended(A,B,h,3*h/4)
-    F3,G3 = calculate_FG_delay_extended(A,B,h,h/4)
-    Acl1 = F1-G1@Kappa
-    Acl2 = F2-G2@Kappa
-    Acl3 = F3-G3@Kappa
-    Acl = Acl1@Acl2@Acl3
-    A_aug = np.block([[Acl, np.zeros_like(Acl)], [np.eye(Acl.shape[0]), np.zeros_like(Acl)]])
-    constraints += [A_aug.T @ P @ A_aug - P << -eta * np.eye(A_aug.shape[0])]
+    # first check (tau1,tau1,tau2)
+    for tau1 in tau1_vals:
+        if tau1 < 2*h:
+            F1,G1 = FG_model_delay(A,B,h,tau1)
+            Acl1 = F1-G1@K
+            for tau2 in tau2_vals:
+                F2,G2 = FG_model_delay(A,B,h,tau2)
+                Acl2 = F2-G2@K
+                Acomb = Acl1@Acl1@Acl2
+                A_aug1 = np.block([[Acomb, np.zeros_like(Acomb)], [np.eye(Acomb.shape[0]), np.zeros_like(Acomb)]])
+                constraints += [A_aug1.T @ P @ A_aug1 - P << -eta * np.eye(A_aug1.shape[0])]
+                # second check (tau2)
+                
+    # this should potentially give less constraints since 2nd check is limited over h<tau<2h
+    for tau2 in tau2_vals:
+        if tau2>h and tau2<2*h:
+                A_aug2 = np.block([[Acl2, np.zeros_like(Acl2)], [np.eye(Acl2.shape[0]), np.zeros_like(Acl2)]])
+                constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
+    
     prob = cp.Problem(cp.Minimize(0), constraints)
     prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
     if prob.status == 'optimal':
@@ -232,7 +195,7 @@ plt.show()
 
 
 """ Question 2 """
-# 
+
 tau_vals = np.linspace(0, 2*h_max, N)
 max_eig_delay_total = []
 best_K_index = []
@@ -255,8 +218,8 @@ for i,h in enumerate(h_vals):
 
 # h= 0.3 is arbitrarily chosen while being stable at tau=0
 # we use the dynamic Kappa for this with variable dynamic control.
-k1_range = np.linspace(-20, 20, K_Samples)
-k2_range = np.linspace(-20, 20, K_Samples)
+k1_range = np.linspace(0, 30, K_Samples)
+k2_range = np.linspace(0, 30, K_Samples)
 
 K1, K2 = np.meshgrid(k1_range, k2_range)
 
@@ -264,7 +227,6 @@ dynamic_K_vals = np.vstack([
     K1.ravel(),
     K2.ravel()
 ])
-print(dynamic_K_vals)
 best_K_Index = []
 h = 0.3
 for i,tau in enumerate(tau_vals):
@@ -274,8 +236,6 @@ for i,tau in enumerate(tau_vals):
         best_K_Index.extend(checkElements(F,G,dynamic_K_vals))
 
 commonKappa = Counter(best_K_Index)
-print(commonKappa)
-#print("The most valid values for K are:", dynamic_K_vals[:,commonKappa[0][0]])
 
 ## Plotting
 Z1 = np.where(np.array((max_eig_delay_total))>=1,0,1) # Convert to NumPy array for plotting & make 1 for stable, 0 for unstable
@@ -302,93 +262,94 @@ plt.tight_layout()
 plt.savefig("Q2_stabilityOfNCS.png")
 plt.show()
 
-# Unpack the data
-# Build arrays for heatmap
-k1_vals = []
-k2_vals = []
-counts = []
+# Create empty heatmap matrix
+heatmap = np.zeros((len(k2_range), len(k1_range)))
 
+# Fill heatmap with occurrence counts
 for idx, count in commonKappa.items():
-    k1_vals.append(dynamic_K_vals[0, idx])   # k1
-    k2_vals.append(dynamic_K_vals[1, idx])   # k2
-    counts.append(count)
 
-k1_vals = np.array(k1_vals)
-k2_vals = np.array(k2_vals)
-counts = np.array(counts)
-print(k1_vals)
-# Create figure
-plt.figure(figsize=(8, 6))
+    k1 = dynamic_K_vals[0, idx]
+    k2 = dynamic_K_vals[1, idx]
 
-# Heatmap-style scatter plot
-sc = plt.scatter(
-    k1_vals,
-    k2_vals,
-    c=counts,
-    s=120,
-    cmap='hot',
-    edgecolors='black'
+    # Find indices in grid
+    i = np.where(k2_range == k2)[0][0]
+    j = np.where(k1_range == k1)[0][0]
+
+    heatmap[i, j] = count
+
+# Find highest frequency
+max_pos = np.unravel_index(np.argmax(heatmap), heatmap.shape)
+
+best_k2 = k2_range[max_pos[0]]
+best_k1 = k1_range[max_pos[1]]
+best_count = heatmap[max_pos]
+
+# Plot heatmap
+plt.figure(figsize=(8,6))
+
+im = plt.imshow(
+    heatmap,
+    origin='lower',
+    extent=[
+        k1_range.min(),
+        k1_range.max(),
+        k2_range.min(),
+        k2_range.max()
+    ],
+    aspect='auto',
+    cmap='hot'
 )
 
 # Colorbar
-cbar = plt.colorbar(sc)
+cbar = plt.colorbar(im)
 cbar.set_label('Frequency')
 
-# Find highest frequency point
-max_idx = np.argmax(counts)
-
-best_k1 = k1_vals[max_idx]
-best_k2 = k2_vals[max_idx]
-best_count = counts[max_idx]
-
-# Highlight most common region
+# Highlight maximum
 plt.scatter(
     best_k1,
     best_k2,
-    s=300,
+    s=250,
     facecolors='none',
     edgecolors='cyan',
     linewidths=3,
-    label=f'Highest Frequency = {best_count}'
+    label=f'Max Frequency = {int(best_count)}'
 )
 
 # Labels
 plt.xlabel('k1')
 plt.ylabel('k2')
-plt.title('Heatmap of Most Common K Values')
+plt.title('K1-K2 Frequency Heatmap')
 
 plt.legend()
-plt.grid(True)
+plt.grid(False)
 plt.tight_layout()
 
 plt.savefig("Q2_mostCommonKappa_heatmap.png")
 plt.show()
 
-print(f"Highest frequency at:")
+print("Highest frequency at:")
 print(f"k1 = {best_k1}")
 print(f"k2 = {best_k2}")
-print(f"count = {best_count}")
+print(f"count = {int(best_count)}")
 
-# temp exit()
-exit()
+
+
+
 
 """ Question 3 """
 feasible_list = []
 feasible_list_fixed = []
-h_vals = np.linspace(0, 1, N)
-tau_vals = np.linspace(0, 1, N)
+h_vals = np.linspace(0, h_max, N)
+tau_vals = np.linspace(0, 2*h_max, N)
+tau_vals1 = np.linspace(0, h_max, int(N/2))
+tau_vals2 = np.linspace(h_max, 2*h_max, int(N/2))
 for i,h in enumerate(h_vals):
     print("progress Q3:",(i/N)*100,"%")
-    feasibility = convex_solve(A,B,staticKappa,tau_vals,h)
-    feasibility_fixed = convex_solve_fixed(A,B,staticKappa,h)
+    feasibility = convex_solve(A,B,Ke,tau_vals,h)
+    feasibility_fixed = convex_solve_fixed(A,B,Ke,tau_vals1,tau_vals2,h)
     feasible_list.append(feasibility)
     feasible_list_fixed.append(feasibility_fixed)
-
-
-
-
-
-#Q2 extra
+    
 
 
 
