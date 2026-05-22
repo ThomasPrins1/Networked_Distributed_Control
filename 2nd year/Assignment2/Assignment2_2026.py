@@ -13,22 +13,41 @@ from sympy import symbols
 from math import isclose
 import cvxpy as cp
 from collections import Counter
-np.random.seed(19680806)
+import mosek
+import os
+np.random.seed(5885221)
 
 
 """ Variables """
-tolerance = 1e-1
-eta = 1e-4
+tolerance = 1e-2
+eta = 1e-6
 a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
-A = np.array([[(0.5-c),0],[(0.2+a-b),-1]])
+# iterations
+N = 250
+K_Samples = 51
+h_max = 0.5
+
+path = os.path.dirname(os.path.abspath(__file__))
+"""pre-calculations Kappa"""
+A = np.array([[0,(0.5+c)],[(0.5+abs(a-b)),1]])
 B = np.array([[1],[0]])
 print("A=",A)
 print("B=",B)
-# iterations
-N = 200
-kappaSamples = 5*N+1
+# eigenvalues K:
+k1 = symbols('k1')
+k2 = symbols('k2')
+s = symbols('s')
+K = np.array([[k1], [k2]])
+A_sizeT = np.shape(A)
+temp = s*np.eye(A_sizeT[0])-(A-(B@K.T))
+temp_det = temp[0][0]*temp[1][1]-temp[0][1]*temp[1][0]
+print(temp)
+print(temp_det)
+k1 = 5
+k2 = 61/14
+K = np.array([[k1], [k2]]).T # pre-transpose
 
 
 # eigenvalues K:

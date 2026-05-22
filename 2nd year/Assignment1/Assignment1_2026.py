@@ -13,7 +13,9 @@ from sympy import symbols
 from math import isclose
 import cvxpy as cp
 from collections import Counter
-np.random.seed(19680806)
+import mosek
+import os
+np.random.seed(5885221)
 
 """ Variables """
 tolerance = 1e-2
@@ -22,9 +24,11 @@ a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
 # iterations
-N = 50
+N = 250
 K_Samples = 51
 h_max = 0.5
+
+path = os.path.dirname(os.path.abspath(__file__))
 """pre-calculations Kappa"""
 A = np.array([[0,(0.5+c)],[(0.5+abs(a-b)),1]])
 B = np.array([[1],[0]])
@@ -52,7 +56,7 @@ def FG_model_noDelay(A,B,h):
     singular = np.linalg.matrix_rank(A)
     if singular == n:
         F = expm(A*h)
-        G = ((F-np.eye(n))@(np.linalg.inv(A)))@B
+        G = ((np.linalg.inv(A))@(F-np.eye(n)))@B
         return F,G
     else:
         # if not invertable:
@@ -70,12 +74,13 @@ def FG_model_delay(A,B,h,tau):
     # write as x_k+1 = x_k*(F_h-G_h*Kappa)
     if singular == n:
         Fx = expm(A*h) # 2x2
-        temp = expm(A*(h-tau)) # 2x2
-        if tau<=h:
-            Fu = ((Fx-temp)@(np.linalg.inv(A)))@B # 2x1
-        elif tau>h:
+        if tau<h:
+            temp = expm(A*(h-tau)) # 2x2
+            Fu = ((np.linalg.inv(A))@(Fx-temp))@B # 2x1
+        elif tau>=h:
+            temp = expm(A*(2*h-tau)) # 2x2
             Fu = np.zeros((n,m)) # 2x1
-        G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B # 2x1
+        G1 = ((np.linalg.inv(A))@(temp-np.eye(n)))@B # 2x1
         F = np.block([[Fx, Fu], [np.zeros((m,n+m))]]) # 3x3
         G = np.block([[G1],[np.eye(m)]]) # 3x1
         return F,G
@@ -84,125 +89,55 @@ def FG_model_delay(A,B,h,tau):
         print("A is a singular matrix")
         return np.nan,np.nan,np.nan,np.nan,np.nan
 
-def convex_solve(A,B,K,tau_vals,h):
+def convex_solve(A,B,K,tau1,tau2,h):
     n = A.shape[0]
     m = B.shape[1]
     P = cp.Variable(((n+m),(n+m)), symmetric = True) #3x3
     C = 0
     constraints = [P >> eta * np.eye(P.shape[0])]
-    for tau in tau_vals:
-        if tau <= 2*h:
-            F,G = FG_model_delay(A,B,h,tau)
-            Acl = F-G@K # 3x3
-            print(f"\ntau={tau}")
-            print("Acl=")
-            print(Acl)
-            constraints += [Acl.T @ P @ Acl - P << -eta * np.eye(Acl.shape[0])]
-            C+=1
+
+    F1,G1 = FG_model_delay(A,B,h,tau1)
+    F2,G2 = FG_model_delay(A,B,h,tau2)
+    Acl1 = F1-G1@K # 3x3
+    Acl2 = F2-G2@K # 3x3
+    Acl = [Acl1,Acl2]
+    for i in range(len(Acl)):
+        constraints += [Acl[i].T @ P @ Acl[i] - P << -eta * np.eye(Acl[i].shape[0])]
     prob = cp.Problem(cp.Minimize(0), constraints)
-    print("1->",C)
+
     try:
-        prob.solve(
-            solver=cp.CVXOPT,
-            max_iters=5000
-        )
-
+        prob.solve(solver=cp.MOSEK)
     except Exception as e:
-
         print("Solver failed:")
         print(e)
-
         return False
-    if prob.status == 'optimal' or prob.status == 'optimal_inaccurate':
-        return True
-    else:
-        print("bla")
-        return False
+    return prob.status in [cp.OPTIMAL,cp.OPTIMAL_INACCURATE]
 
 def convex_solve_fixed(A,B,K,tau1,tau2,h):
     n = A.shape[0]
     m = B.shape[1]
-    P = cp.Variable(((n+m),(n+m)), symmetric = True)
+    P = cp.Variable(((n+m),(n+m)), symmetric = True) #3x3
     C = 0
     constraints = [P >> eta * np.eye(P.shape[0])]
-    if tau2 <= 2*h:
-        F2,G2 = FG_model_delay(A,B,h,tau2)
-        Acl2 = F2-G2@K # 3x3
-        # first check (tau1,tau1,tau2)
-        A_aug2 = Acl2
-        constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
-        C+=1
-        if tau1<= 2*h:
-            F1,G1 = FG_model_delay(A,B,h,tau1)
-            Acl1 = F1-G1@K
-            A_aug1 = Acl2@Acl1@Acl1 # 3x3
-            constraints += [A_aug1.T @ P @ A_aug1 - P << -eta * np.eye(A_aug1.shape[0])]
-            C+=1
-        
-    
+
+    F1,G1 = FG_model_delay(A,B,h,tau1)
+    F2,G2 = FG_model_delay(A,B,h,tau2)
+    Acl1 = F1-G1@K # 3x3
+    Acl2 = F2-G2@K # 3x3
+    Acl3 = Acl2@Acl1@Acl1
+    Acl = [Acl3,Acl2]
+    for i in range(len(Acl)):
+        constraints += [Acl[i].T @ P @ Acl[i] - P << -eta * np.eye(Acl[i].shape[0])]
     prob = cp.Problem(cp.Minimize(0), constraints)
-    print("2->",C)
+    
     try:
-        prob.solve(
-            solver=cp.CVXOPT,
-            max_iters=5000
-        )
-
+        prob.solve(solver=cp.MOSEK)
     except Exception as e:
-
         print("Solver failed:")
         print(e)
+        return False
+    return prob.status in [cp.OPTIMAL,cp.OPTIMAL_INACCURATE]
 
-        return False
-    if prob.status == 'optimal' or prob.status == 'optimal_inaccurate':
-        return True
-    else:
-        return False
-    
-def convex_solve_grid(A,B,K,tau1_vals,tau2_vals,h):
-    n = A.shape[0]
-    m = B.shape[1]
-    P = cp.Variable(((n+m),(n+m)), symmetric = True)
-    C = 0
-    constraints = [P >> eta * np.eye(P.shape[0])]
-    for tau in tau_vals:
-        F1,G1 = FG_model_delay(A,B,h,tau1)
-        F2,G2 = FG_model_delay(A,B,h,tau2)
-
-    # first check (tau1,tau1,tau2)
-    for tau1 in tau1_vals:
-        if tau1 < 2*h:
-            F1,G1 = FG_model_delay(A,B,h,tau1)
-            Acl1 = F1-G1@K
-            for tau2 in tau2_vals:
-                F2,G2 = FG_model_delay(A,B,h,tau2)
-                Acl2 = F2-G2@K # 3x3
-                A_aug1 = Acl2@Acl1@Acl1 # 3x3
-                constraints += [A_aug1.T @ P @ A_aug1 - P << -eta * np.eye(A_aug1.shape[0])]
-                if tau2>h and tau2<2*h:
-                    A_aug2 = Acl2
-                    constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
-                    C+=1
-                C+=1
-                # second check (tau2)
-                
-    # this should potentially give less constraints since 2nd check is limited over h<tau<2h
-    for tau2 in tau2_vals:
-        if tau2>h and tau2<2*h:
-                F2,G2 = FG_model_delay(A,B,h,tau2)
-                Acl2 = F2-G2@K
-                A_aug2 = Acl2
-                constraints += [A_aug2.T @ P @ A_aug2 - P << -eta * np.eye(A_aug2.shape[0])]
-                C+=1
-    
-    prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.SCS, max_iters=5000, eps=1e-5)
-    print("2->",C)
-    if prob.status == 'optimal':
-        return True
-    else:
-        return False
-    
 def checkElements(F,G,Kappa_vals):
     out = []
     i=0
@@ -256,7 +191,7 @@ plt.title((f"Stability of Sampled-Data Closed-Loop System between: [0, {np.mean(
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("Q1_stabilityOfStaticController.png")
+plt.savefig(os.path.join(path, f"Q1_stabilityOfStaticController.png"))
 plt.show()
 
 
@@ -273,14 +208,14 @@ for i,h in enumerate(h_vals):
     print("progress Q2:",(i/N)*100,"%")
     max_eig_delay = []
     for tau in tau_vals:
-        if tau<2*h: # case where tau < 2h
+        if tau<=2*h: # case where tau < 2h
             F,G = FG_model_delay(A,B,h,tau)
             A_cl = F-G@Ke
             eigenvalues = np.linalg.eigvals(A_cl)
             temp = np.max(np.abs(eigenvalues))
             max_eig_delay.append(temp)
         else: # case where exceeds boundary of 2h
-            max_eig_delay.append(np.nan)
+            max_eig_delay.append(5)
     max_eig_delay_total.append(max_eig_delay)
 
 # h= 0.3 is arbitrarily chosen while being stable at tau=0
@@ -290,10 +225,7 @@ k2_range = np.linspace(0, 30, K_Samples)
 
 K1, K2 = np.meshgrid(k1_range, k2_range)
 
-dynamic_K_vals = np.vstack([
-    K1.ravel(),
-    K2.ravel()
-])
+dynamic_K_vals = np.vstack([K1.ravel(),K2.ravel()])
 best_K_Index = []
 h = 0.3
 for i,tau in enumerate(tau_vals):
@@ -303,21 +235,35 @@ for i,tau in enumerate(tau_vals):
         best_K_Index.extend(checkElements(F,G,dynamic_K_vals))
 
 commonKappa = Counter(best_K_Index)
-
+print(np.array((max_eig_delay_total)))
 ## Plotting
 Z1 = np.where(np.array((max_eig_delay_total))>=1,0,1) # Convert to NumPy array for plotting & make 1 for stable, 0 for unstable
 
 # Create meshgrid for contour plot
-H, T = np.meshgrid(h_vals,tau_vals)  # note the order: row = h, column = tau
+H, T = np.meshgrid(tau_vals,h_vals)  # note the order: row = h, column = tau
 
 # Plot contour where max eigenvalue magnitude = 1
 plt.figure(figsize=(8, 6))
 contour = plt.contourf(T, H, Z1, levels=2, cmap='viridis')
-plt.colorbar(contour, label='Max |eig(F)|')
+plt.colorbar(contour, label='stability')
 
-# Add stability boundary (e.g., contour where max eig = 1)
-#cs = plt.contour(T, H, Z1, levels=[1.0], colors='red', linewidths=2)
-#plt.clabel(cs, inline=True, fmt='Stability boundary', fontsize=10)
+# τ = h diagonal
+plt.plot(
+    h_vals,
+    h_vals,
+    'r--',
+    linewidth=2,
+    label=r'$\tau=h$'
+)
+
+# τ = 2h boundary
+plt.plot(
+    h_vals,
+    2*np.array(h_vals),
+    'w--',
+    linewidth=2,
+    label=r'$\tau=2h$'
+)
 
 # Labels
 plt.ylabel('τ (Delay)')
@@ -326,7 +272,7 @@ plt.title('Max Eigenvalue Magnitude of F(h, τ)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("Q2_stabilityOfNCS.png")
+plt.savefig(os.path.join(path, f"Q2_stabilityOfNCS.png"))
 plt.show()
 
 # Create empty heatmap matrix
@@ -391,7 +337,7 @@ plt.legend()
 plt.grid(False)
 plt.tight_layout()
 
-plt.savefig("Q2_mostCommonKappa_heatmap.png")
+plt.savefig(os.path.join(path, f"Q2_mostCommonKappa_heatmap.png"))
 plt.show()
 
 print("Highest frequency at:")
@@ -404,56 +350,88 @@ print(f"count = {int(best_count)}")
 
 
 """ Question 3 """
-feasible_list = []
+
 feasible_list_fixed = []
-h_vals = np.linspace(0, h_max, N)
-tau_vals = np.linspace(0, 2*h_max, N)
+#h_vals = np.linspace(0, h_max, N)
+# we fix h, since 3D gives bad visibility:
+h = 0.1
+print(best_k1)
+Ke_improved = np.array([[best_k1,best_k2,0]])
+print(Ke)
+print(Ke_improved)
+tau_vals = np.linspace(0, 2*h, N)
 tau_vals1 = np.linspace(0, h_max, int(N/2))
-tau_vals2 = np.linspace(h_max, 2*h_max, int(N/2))
+tau_vals2 = np.linspace(h, 2*h, int(N/2))
 avg_tau1 = sum(tau_vals1) / len(tau_vals1)
 avg_tau2 = sum(tau_vals2) / len(tau_vals2)
-for i,h in enumerate(h_vals):
-    print("progress Q3:",(i/N)*100,"%")
-    # part 1
-    feasibility = convex_solve(A,B,Ke,tau_vals,h)
-    feasible_list.append(feasibility)
-    # part 2
-    feasibility_fixed = convex_solve_fixed(A,B,Ke,avg_tau1,avg_tau2,h)
-    feasible_list_fixed.append(feasibility_fixed)
-    
 
+feasible_grid = np.zeros((len(tau_vals1), len(tau_vals2)))
+feasible_grid_fixed = np.zeros((len(tau_vals1), len(tau_vals2)))
+# part 1, not needed to simulate
+for i,tau1 in enumerate(tau_vals1):
+    print("progress Q3:",(2*i/N)*100,"%")
+    for j,tau2 in enumerate(tau_vals2):
+        # part 1, not needed to simulate
+        feasibility = convex_solve(A,B,Ke_improved,tau1,tau2,h)
+        feasible_grid[i,j] = feasibility
+        # part 2
+        feasibility_fixed = convex_solve_fixed(A,B,Ke_improved,tau1,tau2,h)
+        feasible_grid_fixed[i,j] = feasibility_fixed
+print(feasible_grid)
 
+fig, axes = plt.subplots(
+    1, 2,
+    figsize=(10,6),
+    constrained_layout=True
+)
 
-#Q3
-# Convert booleans to array
-feasible_arr = np.array(feasible_list)
-feasible_arr_fixed = np.array(feasible_list_fixed)
+# Plot 1
+im1 = axes[0].imshow(
+    feasible_grid,
+    origin='lower',
+    extent=[
+        tau_vals2[0], tau_vals2[-1],
+        tau_vals1[0], tau_vals1[-1]
+    ],
+    aspect='auto',
+    cmap='viridis',
+    vmin=0,
+    vmax=1
+)
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 4), sharey=True)
+axes[0].set_xlabel(r'$\tau_2$')
+axes[0].set_ylabel(r'$\tau_1$')
+axes[0].set_title('Variable delays')
 
-# First plot
-axes[0].scatter(h_vals[feasible_arr], np.ones(sum(feasible_arr)),
-                color="green", marker="o", label="Feasible")
-axes[0].scatter(h_vals[~feasible_arr], np.ones(sum(~feasible_arr)),
-                color="red", marker="x", label="Infeasible")
-axes[0].set_xlabel("h (Sampling Time)")
-axes[0].set_title("Original Feasibility")
-axes[0].grid(True)
-axes[0].legend()
-axes[0].set_yticks([])
+# Plot 2
+im2 = axes[1].imshow(
+    feasible_grid_fixed,
+    origin='lower',
+    extent=[
+        tau_vals2[0], tau_vals2[-1],
+        tau_vals1[0], tau_vals1[-1]
+    ],
+    aspect='auto',
+    cmap='viridis',
+    vmin=0,
+    vmax=1
+)
 
-# Second plot
-axes[1].scatter(h_vals[feasible_arr_fixed], np.ones(sum(feasible_arr_fixed)),
-                color="green", marker="o", label="Feasible")
-axes[1].scatter(h_vals[~feasible_arr_fixed], np.ones(sum(~feasible_arr_fixed)),
-                color="red", marker="x", label="Infeasible")
-axes[1].set_xlabel("h (Sampling Time)")
-axes[1].set_title("Fixed Feasibility")
-axes[1].grid(True)
-axes[1].legend()
-axes[1].set_yticks([])
+axes[1].set_xlabel(r'$\tau_2$')
+axes[1].set_ylabel(r'$\tau_1$')
+axes[1].set_title('Fixed average delays')
 
-plt.suptitle("Feasible h Values (LMI Stability Test)")
-plt.tight_layout()
-plt.savefig("Q3_rangeOfStability_ZOH.png")
+# Shared colorbar
+cbar = fig.colorbar(
+    im2,
+    ax=axes,
+    location='right',
+    pad=0.02
+)
+
+cbar.set_label('Stable (1=True, 0=False)')
+
+fig.suptitle(f'Stability regions (h={h})')
+
+plt.savefig(os.path.join(path, f"Q3_generalVSfixed_stability.png"))
 plt.show()
