@@ -227,7 +227,7 @@ K1, K2 = np.meshgrid(k1_range, k2_range)
 
 dynamic_K_vals = np.vstack([K1.ravel(),K2.ravel()])
 best_K_Index = []
-h = 0.3
+h = 0.1
 for i,tau in enumerate(tau_vals):
     print("progress Q2, K optimisation:",(i/N)*100,"%")
     if tau<2*h:
