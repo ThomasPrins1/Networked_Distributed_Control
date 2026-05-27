@@ -15,6 +15,7 @@ import cvxpy as cp
 from collections import Counter
 import mosek
 import os
+from scipy.integrate import solve_ivp
 np.random.seed(5885221)
 
 
@@ -126,10 +127,8 @@ def convex_solve(A,B,K,h,tau_vals):
         Acl[2]@Acl[1]@Acl[1],
         Acl[0]@Acl[1]@Acl[1],
         Acl[1]@Acl[0],
-        Acl[0]@Acl[1],
         Acl[2]@Acl[0],
-        Acl[0]@Acl[2],
-        Acl[1]@Acl[2]
+        Acl[1]@Acl[2],
         ]
     for j in range(len(A_automaton)):
         constraints += [A_automaton[j].T @ P @ A_automaton[j] - P << -eta * np.eye(A_automaton[j].shape[0])]
@@ -375,4 +374,153 @@ plt.savefig(
     ),
     dpi=300
 )
+plt.show()
+
+
+def closed_loop_dynamics(t, x, A, B, K, xk):
+
+    u = K @ xk
+
+    dx = A @ x + B @ u
+
+    return dx
+def triggering_event(t, x, A, B, K, xk, sigma, eps):
+
+    e = xk - x
+
+    return (
+        np.linalg.norm(e)**2
+        - sigma*np.linalg.norm(x)**2
+        - eps
+    )
+triggering_event.terminal = True
+triggering_event.direction = 1
+def simulate_ETC(
+    A,
+    B,
+    K,
+    x0,
+    sigma,
+    eps,
+    r,
+    tmax=20
+):
+
+    t0 = 0
+
+    x = x0.copy()
+
+    xk = x.copy()
+
+    T = [t0]
+    X = [x.copy()]
+
+    event_times = [t0]
+
+    while np.linalg.norm(x) > r and t0 < tmax:
+
+        event_fun = lambda t, xx: triggering_event(
+            t,
+            xx,
+            A,
+            B,
+            K,
+            xk,
+            sigma,
+            eps
+        )
+
+        event_fun.terminal = True
+        event_fun.direction = 1
+
+        sol = solve_ivp(
+            lambda t, xx:
+                closed_loop_dynamics(
+                    t,
+                    xx,
+                    A,
+                    B,
+                    K,
+                    xk
+                ),
+            [t0, tmax],
+            x,
+            events=event_fun,
+            max_step=0.01
+        )
+
+        # store trajectory
+        T.extend(sol.t[1:])
+        X.extend(sol.y.T[1:])
+
+        # final state
+        x = sol.y[:, -1]
+
+        t0 = sol.t[-1]
+
+        # update transmitted state
+        xk = x.copy()
+
+        event_times.append(t0)
+
+    return (
+        np.array(T),
+        np.array(X),
+        np.array(event_times)
+    )
+sigmas = [10, 50, 90]
+
+x0 = np.array([2, 0])
+
+r = 0.05
+
+eps = 1e-4
+
+for sigma in sigmas:
+
+    T, X, events = simulate_ETC(
+        A,
+        B,
+        K,
+        x0,
+        sigma,
+        eps,
+        r
+    )
+
+    avg_sampling = (
+        events[-1] / len(events)
+    )
+
+    print(
+        f"sigma={sigma}"
+    )
+
+    print(
+        f"communications={len(events)}"
+    )
+
+    print(
+        f"average inter-event time={avg_sampling}"
+    )
+
+    plt.plot(
+        T,
+        np.linalg.norm(X, axis=1),
+        label=f"sigma={sigma}"
+    )
+
+    plt.axhline(
+    r,
+    linestyle='--',
+    label='target radius'
+)
+
+plt.xlabel("time")
+plt.ylabel("||x(t)||")
+
+plt.grid()
+
+plt.legend()
+
 plt.show()
