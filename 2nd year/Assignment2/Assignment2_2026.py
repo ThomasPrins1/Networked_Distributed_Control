@@ -25,7 +25,7 @@ a = 5 # first digit student number
 b = 8 # third digit student number
 c = 1 # last digid digit student number
 # iterations
-N = 250
+N = 100
 K_Samples = 51
 h_max = 0.5
 
@@ -49,221 +49,330 @@ k1 = 5
 k2 = 61/14
 K = np.array([[k1], [k2]]).T # pre-transpose
 
-
-# eigenvalues K:
-k1 = symbols('k1')
-k2 = symbols('k2')
-s = symbols('s')
-Kappa = np.array([[k1], [k2]])
-A_sizeT = np.shape(A)
-temp = s*np.eye(A_sizeT[0])-(A-(B@Kappa.T))
-k1 = 2.5
-k2 = -2/2.8
-Kappa = np.array([[k1], [k2]]).T
-# with extended state an extended Kappa is needed aswell using the static controller:
-staticKappa = np.hstack((Kappa, np.zeros((1,1))))
-
 """ Functions """
-def calculate_FG_delay_extended(A,B,h,tau,K):
-    # F values:
+def FG_model_delay(A,B,h,tau):
+    # This function uses the A and B matrices to form the extended F and G matrices. It uses the sampling time h and the delay tau.
+    # Take care this is an extended system, which means the sizes of the F and G matrices are not equal to the noDelay model!
+    # the delay goes back to k-2
     n = A.shape[0]
     m = B.shape[1]
     singular = np.linalg.matrix_rank(A)
     # write as x_k+1 = x_k*(F_h-G_h*Kappa)
     if singular == n:
-        Fh = expm(A*h)
-        F_temp = expm(A*(h-tau))
-        F_tau = expm(A*(tau))
-        if tau<(h/2):
-            Fh_tau = ((F_temp-np.eye(n))@(np.linalg.inv(A)))@B
-            Fprev = np.zeros((m,m))
-            G1 = ((F_tau-np.eye(n))@(np.linalg.inv(A)))@B
-            Gcur = np.eye(m)
-        elif tau>(h/2) and tau<h:
-            Fh_tau = np.zeros((n,m))
-            Fprev = np.eye(m)
-            G1 = ((Fh-np.eye(n))@(np.linalg.inv(A)))@B
-            Gcur = np.eye(m)
-        else:
-            # edge case tau == h/2 or tau == h
-            Fh_tau = np.zeros((n,m))
-            G1 = ((Fh - np.eye(n)) @ np.linalg.inv(A)) @ B
-            Fprev = np.eye(m)
-            Gcur = np.eye(m)
-        F = np.block([[Fh, Fh_tau], [np.zeros((m,n)), Fprev]])
-        G = np.vstack((G1, Gcur))
-        A_cl = np.block([[Fh-K@G1, Fh_tau], [-K, Fprev]])
-        return F,G,A_cl
-    else:
-        # if not invertable:
-        print("A is a singular matrix")
-        return np.nan,np.nan,np.nan,np.nan,np.nan
-    
-def calculate_FG_delay(A,B,h,tau):
-    # F values:
-    n = A.shape[0]
-    m = B.shape[1]
-    singular = np.linalg.matrix_rank(A)
-    # write as x_k+1 = x_k*(F_h-G_h*Kappa)
-    if singular == n:
-        Fx = expm(A*h)
-        temp = expm(A*(h-tau))
-        Fu = ((Fx-temp)@(np.linalg.inv(A)))@B
-        G1 = ((temp-np.eye(n))@(np.linalg.inv(A)))@B
-        F = np.block([[Fx, Fu], [np.zeros((m,n)), np.zeros((m,m))]])
-        G = np.vstack((G1, np.eye(m)))
+        Fx = expm(A*h) # 2x2
+        if tau<h:
+            temp = expm(A*(h-tau)) # 2x2
+            Fu = ((np.linalg.inv(A))@(Fx-temp))@B # 2x1
+        elif tau>=h:
+            temp = expm(A*(2*h-tau)) # 2x2
+            Fu = np.zeros((n,m)) # 2x1
+        G1 = ((np.linalg.inv(A))@(temp-np.eye(n)))@B # 2x1
+        F = np.block([[Fx, Fu], [np.zeros((m,n+m))]]) # 3x3
+        G = np.block([[G1],[np.eye(m)]]) # 3x1
         return F,G
     else:
         # if not invertable:
         print("A is a singular matrix")
         return np.nan,np.nan,np.nan,np.nan,np.nan
 
-def build_polytopic_model(A,B,K,h):
-    tau_vals = [0.0, h/2.0, h]
+def build_polytopic_model(A, B, h, tau_vals):
+
     vertices = []
-    n = K.shape[1]     # state dimension
+
     for tau in tau_vals:
-        F, G = calculate_FG_delay(A,B,h,tau)
-        n_aug = F.shape[0] # augmented dimension
-        Fcl = F-G@K@(np.hstack([np.eye(n), np.zeros((n, n_aug - n))]))
-        vertices.append(Fcl)
+        F, G = FG_model_delay(A, B, h, tau)
+
+        if np.any(np.isnan(F)):
+            raise ValueError(
+                f"Failed to build F,G at tau={tau}"
+            )
+
+        vertices.append((F,G))
+
     return vertices
 
-def convex_solve(A,B,Kappa,h):
+def convex_solve_poly(A,B,K,h,tau_vals):
     n = A.shape[0]
     m = B.shape[1]
-    P = cp.Variable(((n+m),(n+m)), symmetric = True)
-    stable_points = []
-    constraints = [P >> eta * np.eye(n+m,n+m)]
-    vertices = build_polytopic_model(A,B,Kappa,h)
-    for Acl in vertices:
-        constraints.append(Acl.T @ P @ Acl - P << -eta*np.eye(n+m))
+    P = cp.Variable(((n+m),(n+m)), symmetric = True) #3x3
+    C = 0
+    constraints = [P >> eta * np.eye(P.shape[0])]
+    vertices = build_polytopic_model(A, B, h, tau_vals)
+    for F,G in vertices:
+        Acl = F - G @ K
+        constraints += [Acl.T @ P @ Acl - P << -eta * np.eye(Acl.shape[0])]
     prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.CVXOPT)
-    if prob.status == 'optimal':
-        return True
-    else:
+
+    try:
+        prob.solve(solver=cp.MOSEK)
+    except Exception as e:
+        print("Solver failed:")
+        print(e)
         return False
+    return prob.status in [cp.OPTIMAL,cp.OPTIMAL_INACCURATE]
+
+def convex_solve(A,B,K,h,tau_vals):
+    n = A.shape[0]
+    m = B.shape[1]
+    P = cp.Variable(((n+m),(n+m)), symmetric = True) #3x3
+    C = 0
+    constraints = [P >> eta * np.eye(P.shape[0])]
+    Acl = []
+    for tau in tau_vals:
+        F,G = FG_model_delay(A,B,h,tau)
+        Acl.append(F-G@K)
+    # add additional constraints from automaton
+    A_automaton = [
+        Acl[2]@Acl[1]@Acl[1],
+        Acl[0]@Acl[1]@Acl[1],
+        Acl[1]@Acl[0],
+        Acl[0]@Acl[1],
+        Acl[2]@Acl[0],
+        Acl[0]@Acl[2],
+        Acl[1]@Acl[2]
+        ]
+    for j in range(len(A_automaton)):
+        constraints += [A_automaton[j].T @ P @ A_automaton[j] - P << -eta * np.eye(A_automaton[j].shape[0])]
+    prob = cp.Problem(cp.Minimize(0), constraints)
+
+    try:
+        prob.solve(solver=cp.MOSEK)
+    except Exception as e:
+        print("Solver failed:")
+        print(e)
+        return False
+    return prob.status in [cp.OPTIMAL,cp.OPTIMAL_INACCURATE]
     
-def convex_solve_NCS_CC(A_vals, prob_matrix):
-    n = A_vals[0].shape[0]
-    M = len(A_vals)
-    #print(A_vals[1])
-    P_var_list = [cp.Variable((n, n), symmetric=True) for _ in range(n)]
-    constraints = [P >> 1e-4 * np.eye(n) for P in P_var_list]
+def convex_solve_NCS_CC(A,B,Ke,h,prob_matrix):
+    n = len(Ke.T)
+    m = B.shape[1]
+    P_list = [cp.Variable((n, n), symmetric=True) for _ in range(len(prob_matrix))]
+    constraints = [P >> eta * np.eye(n) for P in P_list]
+
     #use MSS, p_ij needs to be set up as a matrix with the transition probabilities
-    k = -1
-    for i in range(n):
-        expected = 0
-        for j in range(n):
-            k+=1
-            #print(k)
-            #print(prob_matrix[i, j])
-            expected += prob_matrix[i, j] * (A_vals[k].T @ P_var_list[j] @ A_vals[k])
-        constraints.append(P_var_list[i] - expected >> eta * np.eye(n))
+    Acl_vals = all_states(A,B,h,Ke)
+    for i in range(len(prob_matrix)):
+        sum_term = 0
+        for j in range(len(prob_matrix)):
+            sum_term += prob_matrix[i, j]*(Acl_vals[j].T@P_list[j]@Acl_vals[j])
+        constraints += [P_list[i] - sum_term >> eta * np.eye(n)]
     prob = cp.Problem(cp.Minimize(0), constraints)
-    prob.solve(solver=cp.CVXOPT, verbose=False, max_iters=5000, eps=1e-5)
-    if prob.status == 'optimal':
-        return True
-    else:
+    try:
+        prob.solve(solver=cp.MOSEK)
+    except Exception as e:
+        print("Solver failed:")
+        print(e)
         return False
+    return prob.status in [cp.OPTIMAL,cp.OPTIMAL_INACCURATE]
 
-def all_states(h, A, B, K):
-    F1,G1,A_cl1 = calculate_FG_delay_extended(A, B, h, h/3,K)
-    F2,G2,A_cl2 = calculate_FG_delay_extended(A, B, h, 3*h/4,K)
-    F3,G3,A_cl3 = calculate_FG_delay_extended(A, B, h, h/4,K)
-
-    out = [
-        A_cl1,
-        A_cl1 @ A_cl2,
-        A_cl1 @ A_cl3,
-        A_cl2 @ A_cl1,
-        A_cl2,
-        A_cl2 @ A_cl3,
-        A_cl3 @ A_cl1,
-        A_cl3 @ A_cl2,
-        A_cl3
-    ]
+def all_states(A,B,h,K):
+    n = 3
+    F1,G1 = FG_model_delay(A, B, h, 0)
+    F2,G2 = FG_model_delay(A, B, h, 0.5*h)
+    F3,G3 = FG_model_delay(A, B, h, 1.5*h)
+    A_cl1 = F1-G1@K
+    A_cl2 = F2-G2@K
+    A_cl3 = F3-G3@K
+    #out = np.array([[A_cl1, A_cl2@A_cl1, A_cl3@A_cl1],
+    #                [A_cl1@A_cl2, A_cl2, A_cl3@A_cl2],
+    #                [A_cl1@A_cl3, A_cl2@A_cl3, A_cl3]])
+    out = [A_cl1,A_cl2,A_cl3]
     return out
 
 """ Main Code """
-""" Question 4 """
+""" Question 1 """
 
-h_vals = np.linspace(0.01, 0.5, N)
-spectral_radius_switch = []
+h_vals = np.linspace(0, h_max, N)
 stable_h = []
-
+# with extended state an extended Kappa is needed aswell using the static controller:
+Ke = np.hstack((K, np.zeros((1,1)))) # 1x3
 
 for i,h in enumerate(h_vals):
-    print("progress Q4:",(i/N)*100,"%")
-    feasibility = convex_solve(A,B,Kappa,h)
+    print("progress Q1:",(i/N)*100,"%")
+    tau_vals = [0,0.5*h,1.5*h]
+    feasibility = convex_solve(A,B,Ke,h,tau_vals)
     stable_h.append(feasibility)
 
+# plotting:
+# Convert True/False → 1/0
+stable_h = np.array(stable_h).astype(int)
+
+# Make 2D strip for imshow
+stability_strip = stable_h.reshape(1,-1)
+
+fig, ax = plt.subplots(
+    figsize=(10,2),
+    constrained_layout=True
+)
+
+im = ax.imshow(
+    stability_strip,
+    extent=[h_vals[0], h_vals[-1], 0, 1],
+    aspect='auto',
+    origin='lower',
+    cmap='viridis',
+    vmin=0,
+    vmax=1
+)
+
+ax.set_xlabel('Sampling time h')
+ax.set_yticks([])
+ax.set_title(
+    r'Stability over sampling time '
+    r'($\tau=\{0,0.5h,1.5h\}$)'
+)
+
+cbar = fig.colorbar(im)
+cbar.set_label('Stable (1=True, 0=False)')
+
+fig.savefig(
+    os.path.join(
+        path,
+        "A2Q1_stability_over_h.png"
+    ),
+    dpi=300
+)
+
+plt.show()
 
 
 # This is more strict then the eigenvalue approach but less strict then the common lyapunov over all values of tau
-# Mention this in report!
 
-""" Question 5 """
-n = A.shape[0]
-r1 = 0.2
-r2 = 0.2
-# [ 0.1, 0.8, 0.1 ]
-# [ 0.5, 0.3, 0.2 ]
-# [ 0.2, 0.2, 0.6 ]
-prob_matrix = np.vstack((np.array([0.1, 0.8, 0.1]),np.array([0.5, 0.3, 0.2]),np.array([r1, r2, 1-r1-r2])))
-print(prob_matrix)
-stable_h_stoch = []
+""" Question 2 """
+p_max = 0.3
+q_max = 0.2
+p_vals = np.linspace(0, p_max, int(N/4))
+q_vals = np.linspace(0, q_max, int(N/4))
+temp_index = np.where(stable_h == 1)
+temp_value = h_vals[temp_index]
+h_constant_vals = [max(temp_value),
+                   min(temp_value),
+                   sum(temp_value)/len(temp_value),
+                   max(temp_value)*1.5] 
+
+
+# Plotting
+# Create 2x2 figure
+fig, axes = plt.subplots(
+    2, 2,
+    figsize=(12,10),
+    constrained_layout=True
+)
+
+axes = axes.flatten()
+
+extent = [
+    q_vals[0], q_vals[-1],   # x-axis
+    p_vals[0], p_vals[-1]    # y-axis
+]
+
+for k,h in enumerate(h_constant_vals):
+    stable_h_stoch_grid = np.zeros((len(p_vals),len(q_vals)))
+    for i,p in enumerate(p_vals):
+        print("progress Q2:",(i/len(p_vals))*100,"%", "for h=",h)
+        for j,q in enumerate(q_vals):
+            prob_matrix = np.vstack((np.array([0, 0.5, 0.5]),np.array([q, p, 1-q-p]),np.array([q, 1-q-p, p])))
+            stability = convex_solve_NCS_CC(A,B,Ke,h,prob_matrix)
+            stable_h_stoch_grid[i,j] = int(stability)
+
+    im = axes[k].imshow(
+        stable_h_stoch_grid,
+        origin='lower',
+        extent=extent,
+        aspect='auto',
+        cmap='viridis',
+        interpolation='nearest',
+        vmin=0,
+        vmax=1
+    )
+
+    axes[k].set_title(
+        rf'$h={h:.3f}$'
+    )
+
+    axes[k].set_xlabel('q')
+    axes[k].set_ylabel('p')
+
+    axes[k].set_xlim(
+        q_vals[0],
+        q_vals[-1]
+    )
+
+    axes[k].set_ylim(
+        p_vals[0],
+        p_vals[-1]
+    )
+
+cbar = fig.colorbar(
+    im,
+    ax=axes,
+    location='right',
+    pad=0.02
+)
+
+cbar.set_label(
+    'Stable (1=True, 0=False)'
+)
+
+fig.suptitle(
+    'Stochastic Stability Regions'
+)
+
+fig.savefig(
+    os.path.join(
+        path,
+        "A2Q2_stochastic_stability.png"
+    ),
+    dpi=300
+)
+plt.show()
+
+""" Question 3 """
+stable_h_poly = []
 for i,h in enumerate(h_vals):
-    print("progress Q5:",(i/N)*100,"%")
-    Acl_list = all_states(h,A,B,Kappa)
-    stability = convex_solve_NCS_CC(Acl_list,prob_matrix)
-    stable_h_stoch.append(stability)
-
-#stable_h_e = [h for h, r in zip(h_vals, stable_h_stoch) if r < 1]
-#print("Stable h values :[", min(stable_h_e),",",max(stable_h_e),"]")
-M = 50
-r_vals = np.linspace(0.01, 0.5, M)
-stability = np.zeros((len(r_vals), len(h_vals)))
-for i,r in enumerate(r_vals):
-    print("progress Q5:",(i/M)*100,"%")
-    prob_matrix = np.vstack((np.array([0.1, 0.8, 0.1]),np.array([0.5, 0.3, 0.2]),np.array([r, r, 1-2*r])))
-    for j,h in enumerate(h_vals):
-        Acl_list = all_states(h,A,B,Kappa)
-        stability[i,j] = convex_solve_NCS_CC(Acl_list,prob_matrix)
+    print("progress Q3:",(i/N)*100,"%")
+    tau_vals = np.linspace(0, h, N)
+    feasibility = convex_solve_poly(A,B,Ke,h,tau_vals)
+    stable_h_poly.append(feasibility)
 
 
-""" Plotting """
 
-# Q4
 
-plt.plot(h_vals, stable_h, 'o-')
-plt.xlabel("h")
-plt.ylabel("Feasible (1=True, 0=False)")
-plt.title("Polytopic stability region")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Q4_polytopicStability.png")
-plt.show()
+# Plotting
+stable_numeric = np.array(
+    stable_h_poly,
+    dtype=int
+)
 
-# Q5
-# A
-plt.plot(h_vals, stable_h_stoch, 'o-')
-plt.xlabel("h")
-plt.ylabel("Feasible (1=True, 0=False)")
-plt.title("stochastic stability region")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("Q5_fixedRStochStability.png")
-plt.show()
+plt.figure()
 
-# B
-plt.imshow(stability, extent=[h_vals[0], h_vals[-1], r_vals[0], r_vals[-1]],
-           origin='lower', aspect='auto', cmap='Greens')
-plt.colorbar(label="Feasible (1=True, 0=False)")
-plt.xlabel("h")
-plt.ylabel("r")
-plt.title("Stochastic stability region (heatmap)")
-plt.tight_layout()
-plt.savefig("Q5_heatmapStochStability.png")
+plt.fill_between(
+    h_vals,
+    0,
+    stable_numeric,
+    step='mid',
+    alpha=0.4
+)
+
+plt.plot(
+    h_vals,
+    stable_numeric
+)
+
+plt.xlabel("Sampling time h")
+plt.ylabel("Stability")
+
+plt.yticks(
+    [0,1],
+    ["Not feasible","Feasible"]
+)
+
+plt.grid()
+plt.savefig(
+    os.path.join(
+        path,
+        "A2Q3_stability_over_h.png"
+    ),
+    dpi=300
+)
 plt.show()

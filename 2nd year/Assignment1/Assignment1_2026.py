@@ -191,7 +191,7 @@ plt.title((f"Stability of Sampled-Data Closed-Loop System between: [0, {np.mean(
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(path, f"Q1_stabilityOfStaticController.png"))
+plt.savefig(os.path.join(path, f"A1Q1_stabilityOfStaticController.png"))
 plt.show()
 
 
@@ -272,7 +272,7 @@ plt.title('Max Eigenvalue Magnitude of F(h, τ)')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig(os.path.join(path, f"Q2_stabilityOfNCS.png"))
+plt.savefig(os.path.join(path, f"A1Q2_stabilityOfNCS.png"))
 plt.show()
 
 # Create empty heatmap matrix
@@ -337,7 +337,7 @@ plt.legend()
 plt.grid(False)
 plt.tight_layout()
 
-plt.savefig(os.path.join(path, f"Q2_mostCommonKappa_heatmap.png"))
+plt.savefig(os.path.join(path, f"A1Q2_mostCommonKappa_heatmap.png"))
 plt.show()
 
 print("Highest frequency at:")
@@ -367,63 +367,104 @@ avg_tau2 = sum(tau_vals2) / len(tau_vals2)
 
 feasible_grid = np.zeros((len(tau_vals1), len(tau_vals2)))
 feasible_grid_fixed = np.zeros((len(tau_vals1), len(tau_vals2)))
+feasible_grid_improved = np.zeros((len(tau_vals1), len(tau_vals2)))
+feasible_grid_fixed_improved = np.zeros((len(tau_vals1), len(tau_vals2)))
 # part 1, not needed to simulate
 for i,tau1 in enumerate(tau_vals1):
     print("progress Q3:",(2*i/N)*100,"%")
     for j,tau2 in enumerate(tau_vals2):
         # part 1, not needed to simulate
-        feasibility = convex_solve(A,B,Ke_improved,tau1,tau2,h)
+        feasibility = convex_solve(A,B,Ke,tau1,tau2,h)
         feasible_grid[i,j] = feasibility
         # part 2
-        feasibility_fixed = convex_solve_fixed(A,B,Ke_improved,tau1,tau2,h)
+        feasibility_fixed = convex_solve_fixed(A,B,Ke,tau1,tau2,h)
         feasible_grid_fixed[i,j] = feasibility_fixed
+        # part 1, not needed to simulate (IMPROVED Ke)
+        feasibility_improved = convex_solve(A,B,Ke_improved,tau1,tau2,h)
+        feasible_grid_improved[i,j] = feasibility_improved
+        # part 2 (IMPROVED Ke)
+        feasibility_fixed_improved = convex_solve_fixed(A,B,Ke_improved,tau1,tau2,h)
+        feasible_grid_fixed_improved[i,j] = feasibility_fixed_improved
 print(feasible_grid)
 
 fig, axes = plt.subplots(
-    1, 2,
-    figsize=(10,6),
+    2, 2,
+    figsize=(12,10),
     constrained_layout=True
 )
 
-# Plot 1
-im1 = axes[0].imshow(
+extent = [
+    tau_vals2[0], tau_vals2[-1],
+    tau_vals1[0], tau_vals1[-1]
+]
+
+# Top-left: original Ke variable
+im = axes[0,0].imshow(
     feasible_grid,
     origin='lower',
-    extent=[
-        tau_vals2[0], tau_vals2[-1],
-        tau_vals1[0], tau_vals1[-1]
-    ],
+    extent=extent,
     aspect='auto',
     cmap='viridis',
     vmin=0,
     vmax=1
 )
 
-axes[0].set_xlabel(r'$\tau_2$')
-axes[0].set_ylabel(r'$\tau_1$')
-axes[0].set_title('Variable delays')
+axes[0,0].set_title('Original K — Variable delays')
+axes[0,0].set_xlabel(r'$\tau_2$')
+axes[0,0].set_ylabel(r'$\tau_1$')
 
-# Plot 2
-im2 = axes[1].imshow(
+
+# Top-right: original Ke fixed
+axes[0,1].imshow(
     feasible_grid_fixed,
     origin='lower',
-    extent=[
-        tau_vals2[0], tau_vals2[-1],
-        tau_vals1[0], tau_vals1[-1]
-    ],
+    extent=extent,
     aspect='auto',
     cmap='viridis',
     vmin=0,
     vmax=1
 )
 
-axes[1].set_xlabel(r'$\tau_2$')
-axes[1].set_ylabel(r'$\tau_1$')
-axes[1].set_title('Fixed average delays')
+axes[0,1].set_title('Original K — Fixed delays')
+axes[0,1].set_xlabel(r'$\tau_2$')
+axes[0,1].set_ylabel(r'$\tau_1$')
+
+
+# Bottom-left: improved Ke variable
+axes[1,0].imshow(
+    feasible_grid_improved,
+    origin='lower',
+    extent=extent,
+    aspect='auto',
+    cmap='viridis',
+    vmin=0,
+    vmax=1
+)
+
+axes[1,0].set_title('Improved K — Variable delays')
+axes[1,0].set_xlabel(r'$\tau_2$')
+axes[1,0].set_ylabel(r'$\tau_1$')
+
+
+# Bottom-right: improved Ke fixed
+axes[1,1].imshow(
+    feasible_grid_fixed_improved,
+    origin='lower',
+    extent=extent,
+    aspect='auto',
+    cmap='viridis',
+    vmin=0,
+    vmax=1
+)
+
+axes[1,1].set_title('Improved K — Fixed delays')
+axes[1,1].set_xlabel(r'$\tau_2$')
+axes[1,1].set_ylabel(r'$\tau_1$')
+
 
 # Shared colorbar
 cbar = fig.colorbar(
-    im2,
+    im,
     ax=axes,
     location='right',
     pad=0.02
@@ -431,7 +472,14 @@ cbar = fig.colorbar(
 
 cbar.set_label('Stable (1=True, 0=False)')
 
-fig.suptitle(f'Stability regions (h={h})')
+fig.suptitle(
+    f'Stability comparison (h={h})',
+    fontsize=14
+)
 
-plt.savefig(os.path.join(path, f"Q3_generalVSfixed_stability.png"))
+fig.savefig(
+    os.path.join(path, "A1Q3_generalVSfixed_stability.png"),
+    dpi=300
+)
+
 plt.show()
